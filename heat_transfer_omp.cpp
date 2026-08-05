@@ -21,7 +21,7 @@ struct Grid {
 };
 
 // Simulation loop at given time without blocking strategy
-void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, const std::vector<int>& h_pos, float& avg_t) {
+void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& avg_t) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
     const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
     const float a_w = grid.a_w, a_m = grid.a_m;
@@ -131,7 +131,7 @@ int main(int argc, char *argv[]) {
     printf("• Points along (x,y,z) in the internal system: %d, %d, %d (total: %d)\n", xx_idx_end-xx_idx_start, yy_idx_end-yy_idx_start, zz_idx_end-zz_idx_start, p_in);
     
     Grid grid(x_n, y_n, z_n, dx, dy, dz, dt, a_w, a_c);
-    std::vector<int> heater_id = {
+    int heater_id[6] = {
         xx_idx_start, xx_idx_end,
         yy_idx_start, yy_idx_end,
         zz_idx_start, zz_idx_end
