@@ -20,7 +20,7 @@ struct Grid {
         a_w(a_w), a_m(a_m) {}
 };
 
-// Simulation loop at given time without blocking strategy
+// Simulation loop at given time without tiling strategy
 void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& avg_t) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
     const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
@@ -60,13 +60,67 @@ void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::ve
     }
 }   
 
+// Simulation loop with tiling strategy
+void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& avg_t) {
+    const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
+    const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
+    const float a_w = grid.a_w, a_m = grid.a_m;
+    const int Bx = 16, By = 16, Bz = 16; // Dimensions of tiles
+
+    /* Each block is assigned to one thread:
+        - 3 external loops are used to select blocks
+        - 3 internal loops are used to select entries 
+    */
+    #pragma omp parallel for collapse(2) reduction(+:avg_t)
+    for (int ii=1; ii<x_n-1; ii+=Bx) {
+        for (int jj=1; jj<y_n-1; jj+=By) {
+            int i_max = std::min(ii+Bx, x_n-1); // Avoid access out-of-index
+            int j_max = std::min(jj+By, y_n-1); // Avoid access out-of-index
+            for (int kk=1; kk<z_n-1; kk+=Bz) {
+                int k_max = std::min(kk+Bz, z_n-1); // Avoid access out-of-index
+
+                for (int i=ii; i<i_max; ++i) {
+                    for (int j=jj; j<j_max; ++j) {
+                        int ij_idx = i*y_n*z_n + j*z_n; 
+                        for (int k=kk; k<k_max; ++k) {
+
+                            int idx = ij_idx + k;
+                            float laplacian = (
+                                (T_curr[idx + y_n*z_n] - 2*T_curr[idx] + T_curr[idx - y_n*z_n])/dx2 + 
+                                (T_curr[idx + z_n]     - 2*T_curr[idx] + T_curr[idx - z_n])/(dy2) + 
+                                (T_curr[idx + 1]       - 2*T_curr[idx] + T_curr[idx - 1])/(dz2) 
+                            );
+
+                            // Use correct thermal diffusivity depending on position
+                            float a;
+                            if (
+                                (i>=h_pos[0] && i<h_pos[1]) && 
+                                (j>=h_pos[2] && j<h_pos[3]) &&
+                                (k>=h_pos[4] && k<h_pos[5])
+                            ) {    
+                                a = a_m; 
+                                avg_t += T_curr[idx];
+                            } else {
+                                a = a_w;
+                            }
+
+                            // Update rule
+                            T_next[idx] = T_curr[idx] + a*dt*laplacian;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
 
     // -------------- List of flags that can be turned on from terminal --------------
 
     bool save_data = false;        // save in a file temperature in function of time
     bool show_verbosity = false;   // show execution on terminal
-    bool use_reduction = true;     // use reduction directive (to implement different ones)
+    bool use_tiling = false;       // use reduction directive (to implement different ones)
     bool scale_threads = false;    // execute the program for different values of n_threads
 
     // -------------------------------------------------------------------------------
@@ -78,8 +132,8 @@ int main(int argc, char *argv[]) {
                 save_data = true;
             } else if (arg == "--show-verbosity") {
                 show_verbosity = true;
-            } else if (arg == "--use-reduction") {
-                use_reduction = true;
+            } else if (arg == "--use-tiling") {
+                use_tiling = true;
             } else if (arg == "--scale-thread") {
                 scale_threads = true;
             } else {
@@ -176,13 +230,18 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Simulation loop 
+        // Executing simulation 
         double start = omp_get_wtime();
         for (int tau=0; tau<t_n; tau++) {
 
             // avg temperature of internal block
             float avg_t = 0;
-            naive_simulation_loop(grid, T_curr, T_next, heater_id, avg_t);
+
+            if (use_tiling)
+                tiling_simulation_loop(grid, T_curr, T_next, heater_id, avg_t);
+            else
+                naive_simulation_loop(grid, T_curr, T_next, heater_id, avg_t);
+
             std::swap(T_curr, T_next);
             avg_t /= p_in;
 
