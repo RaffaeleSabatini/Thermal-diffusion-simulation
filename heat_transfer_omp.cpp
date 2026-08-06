@@ -28,7 +28,7 @@ void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::ve
 
     // Boundary conditions: surface of the box is at constant T 
     // => superficial tensor elements are not update
-    #pragma omp parallel for collapse(2) reduction(+:avg_t) schedule(static)
+    #pragma omp parallel for collapse(2) reduction(+:t_in, t_out) schedule(static)
     for (int i=1; i<(x_n-1); ++i) {
         for (int j=1; j<(y_n-1); ++j) {
             int ij_idx = i*y_n*z_n + j*z_n;
@@ -62,6 +62,7 @@ void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::ve
 // Simulation loop with tiling strategy
 void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& t_in, float& t_out) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
+    const int slide = y_n*z_n;
     const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
     const float a_w = grid.a_w, a_m = grid.a_m;
     const int Bx = 16, By = 16, Bz = 16; // Dimensions of tiles
@@ -70,24 +71,26 @@ void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::v
         - 3 external loops are used to select blocks
         - 3 internal loops are used to select entries 
     */
-    #pragma omp parallel for collapse(2) reduction(+:avg_t)
+    #pragma omp parallel for collapse(2) reduction(+:t_in) reduction(+:t_out)
     for (int ii=1; ii<x_n-1; ii+=Bx) {
         for (int jj=1; jj<y_n-1; jj+=By) {
-            int i_max = std::min(ii+Bx, x_n-1); // Avoid access out-of-index
-            int j_max = std::min(jj+By, y_n-1); // Avoid access out-of-index
+            // Avoid access out-of-index
+            int i_max = std::min(ii+Bx, x_n-1); 
+            int j_max = std::min(jj+By, y_n-1); 
+
             for (int kk=1; kk<z_n-1; kk+=Bz) {
-                int k_max = std::min(kk+Bz, z_n-1); // Avoid access out-of-index
+                int k_max = std::min(kk+Bz, z_n-1); 
 
                 for (int i=ii; i<i_max; ++i) {
                     for (int j=jj; j<j_max; ++j) {
-                        int ij_idx = i*y_n*z_n + j*z_n; 
+                        int ij_idx = i*slide + j*z_n; 
                         for (int k=kk; k<k_max; ++k) {
 
                             int idx = ij_idx + k;
                             float laplacian = (
-                                (T_curr[idx + y_n*z_n] - 2*T_curr[idx] + T_curr[idx - y_n*z_n])/dx2 + 
-                                (T_curr[idx + z_n]     - 2*T_curr[idx] + T_curr[idx - z_n])/(dy2) + 
-                                (T_curr[idx + 1]       - 2*T_curr[idx] + T_curr[idx - 1])/(dz2) 
+                                (T_curr[idx + slide] - 2*T_curr[idx] + T_curr[idx - slide])/dx2 + 
+                                (T_curr[idx + z_n]   - 2*T_curr[idx] + T_curr[idx - z_n])/dy2 + 
+                                (T_curr[idx + 1]     - 2*T_curr[idx] + T_curr[idx - 1])/dz2 
                             );
 
                             // Use correct thermal diffusivity depending on position
@@ -99,7 +102,7 @@ void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::v
                                 t_in += T_curr[idx];
                             } else {
                                 a = a_w;
-                                t_out += T_curr[idx]
+                                t_out += T_curr[idx];
                             }
 
                             // Update rule
@@ -242,7 +245,8 @@ int main(int argc, char *argv[]) {
                 naive_simulation_loop(grid, T_curr, T_next, heater_id, t_in, t_out);
 
             std::swap(T_curr, T_next);
-            avg_t /= p_in;
+            t_in /= p_in;
+            t_out /= (x_n*y_n*z_n-p_in);
 
             // Show avg temperature
             if ((tau % 100 == 0) && show_verbosity) {
@@ -251,7 +255,7 @@ int main(int argc, char *argv[]) {
 
             // Save avg temperature and time
             if (save_data) {
-                file <<  tau << " " << t_in << " " << t_out << omp_get_wtime()-start << "\n";
+                file <<  tau << " " << t_in << " " << t_out  << " " << omp_get_wtime()-start << "\n";
             }
         }
 
