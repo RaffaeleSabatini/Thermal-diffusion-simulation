@@ -21,7 +21,7 @@ struct Grid {
 };
 
 // Simulation loop at given time without tiling strategy
-void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& avg_t) {
+void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& t_in, float& t_out) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
     const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
     const float a_w = grid.a_w, a_m = grid.a_m;
@@ -42,15 +42,14 @@ void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::ve
 
                 // Use correct thermal diffusivity depending on position
                 float a;
-                if (
-                    (i>=h_pos[0] && i<h_pos[1]) && 
+                if ((i>=h_pos[0] && i<h_pos[1]) && 
                     (j>=h_pos[2] && j<h_pos[3]) &&
-                    (k>=h_pos[4] && k<h_pos[5])
-                ) {    
+                    (k>=h_pos[4] && k<h_pos[5])) {    
                     a = a_m; 
-                    avg_t += T_curr[idx];
+                    t_in += T_curr[idx];
                 } else {
                     a = a_w;
+                    t_out += T_curr[idx];
                 }
 
                 // Update rule
@@ -61,7 +60,7 @@ void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::ve
 }   
 
 // Simulation loop with tiling strategy
-void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& avg_t) {
+void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& t_in, float& t_out) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
     const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
     const float a_w = grid.a_w, a_m = grid.a_m;
@@ -93,15 +92,14 @@ void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::v
 
                             // Use correct thermal diffusivity depending on position
                             float a;
-                            if (
-                                (i>=h_pos[0] && i<h_pos[1]) && 
+                            if ((i>=h_pos[0] && i<h_pos[1]) && 
                                 (j>=h_pos[2] && j<h_pos[3]) &&
-                                (k>=h_pos[4] && k<h_pos[5])
-                            ) {    
+                                (k>=h_pos[4] && k<h_pos[5])) {    
                                 a = a_m; 
-                                avg_t += T_curr[idx];
+                                t_in += T_curr[idx];
                             } else {
                                 a = a_w;
+                                t_out += T_curr[idx]
                             }
 
                             // Update rule
@@ -210,7 +208,7 @@ int main(int argc, char *argv[]) {
                 std::cerr << "Error! " << f_name << " cannot be open!" << std::endl;
                 return 1;
             } else {
-                file << "iterat. temperature elapsed-time" << std::endl;
+                file << "iterat. internal-T external-T elapsed-time" << std::endl;
             }
         }
 
@@ -234,25 +232,26 @@ int main(int argc, char *argv[]) {
         double start = omp_get_wtime();
         for (int tau=0; tau<t_n; tau++) {
 
-            // avg temperature of internal block
-            float avg_t = 0;
+            // avg temperatures of internal block and external material
+            float t_in = 0;
+            float t_out = 0;
 
             if (use_tiling)
-                tiling_simulation_loop(grid, T_curr, T_next, heater_id, avg_t);
+                tiling_simulation_loop(grid, T_curr, T_next, heater_id, t_in, t_out);
             else
-                naive_simulation_loop(grid, T_curr, T_next, heater_id, avg_t);
+                naive_simulation_loop(grid, T_curr, T_next, heater_id, t_in, t_out);
 
             std::swap(T_curr, T_next);
             avg_t /= p_in;
 
             // Show avg temperature
             if ((tau % 100 == 0) && show_verbosity) {
-                printf("Iteration: %d/%d ------ Time: %1.3e ------ Average temperature: (%1.3f)\n", tau, t_n, tau*dt, avg_t);
+                printf("Iteration: %d/%d ------ Time: %1.3e ------ Internal Temp.: (%1.3f)\n", tau, t_n, tau*dt, t_in);
             }
 
             // Save avg temperature and time
             if (save_data) {
-                file <<  tau << " " << avg_t << omp_get_wtime()-start << "\n";
+                file <<  tau << " " << t_in << " " << t_out << omp_get_wtime()-start << "\n";
             }
         }
 
