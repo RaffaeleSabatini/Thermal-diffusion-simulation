@@ -17,38 +17,61 @@ struct Grid {
 };
 
 __global__ void naive_simulation_loop(const float* T_curr, float* T_next, const int* h_pos, const Grid grid) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    int dep = blockIdx.z * blockDim.z + threadIdx.z;
+    int x_id = blockIdx.x * blockDim.x + threadIdx.x;
+    int y_id = blockIdx.y * blockDim.y + threadIdx.y;
+    int z_id = blockIdx.z * blockDim.z + threadIdx.z;
 
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
     const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
     const float a_w = grid.a_w, a_m = grid.a_m;
     
-    if ((row > 0 && row < y_n-1) && (col > 0 && col < x_n-1) && (dep > 0 && dep < z_n-1)) {
-        int idx = dep*y_n*x_n + row*x_n + col;
+    if ((y_id > 0 && y_id < y_n-1) && (x_id > 0 && x_id < x_n-1) && (z_id > 0 && z_id < z_n-1)) {
+        int t_idx = x_id*y_n*z_n + y_id*z_n + z_id;
         float laplacian = (
-            (T_curr[idx + y_n*x_n] - 2*T_curr[idx] + T_curr[idx - y_n*x_n])/dx2 + 
-            (T_curr[idx + x_n]     - 2*T_curr[idx] + T_curr[idx - x_n])/(dy2) + 
-            (T_curr[idx + 1]       - 2*T_curr[idx] + T_curr[idx - 1])/(dz2) 
+            (T_curr[t_idx + y_n*z_n] - 2*T_curr[t_idx] + T_curr[t_idx - y_n*z_n])/dx2 + 
+            (T_curr[t_idx + z_n]     - 2*T_curr[t_idx] + T_curr[t_idx - z_n])/(dy2) + 
+            (T_curr[t_idx + 1]       - 2*T_curr[t_idx] + T_curr[t_idx - 1])/(dz2) 
         );
 
         // Use correct thermal diffusivity depending on position
         float a;
-        if ((col>=h_pos[0] && col<h_pos[1]) && 
-            (row>=h_pos[2] && row<h_pos[3]) &&
-            (dep>=h_pos[4] && dep<h_pos[5])) 
+        if ((x_id>=h_pos[0] && x_id<h_pos[1]) && 
+            (y_id>=h_pos[2] && y_id<h_pos[3]) &&
+            (z_id>=h_pos[4] && z_id<h_pos[5])) 
             a = a_m; 
         else
             a = a_w;
 
         // Update rule
-        T_next[idx] = T_curr[idx] + a*dt*laplacian;
+        T_next[t_idx] = T_curr[t_idx] + a*dt*laplacian;
     }
 }
 
 //__global__ void optimal_loop_simulation
-//__global__ void compute_temperatures
+
+
+__global__ void compute_temperatures(const float T, const Grid grid, const* int h_pos) {
+    int x_id = blockDim.x * blockIdx.x + threadIdx.x;
+    int y_id = blockDim.y * blockIdx.y + threadIdx.y;
+    int z_id = blockDim.z * blockIdx.z + threadIdx.z;
+
+    // The number of threads initially needed is 1/8 of the tensor size
+    // At each iteration every thread computes the sum of 8 values of the tensor
+    __shared__ float TEMP[];
+
+    if ((x_id>=h_pos[0] && x_id<h_pos[1]) && 
+        (y_id>=h_pos[2] && y_id<h_pos[3]) &&
+        (z_id>=h_pos[4] && z_id<h_pos[5])
+    ) {
+        for (int step=1; step <= std::max(x_n, y_n, z_n); step*=2) {
+            __syncthreads();
+
+
+        }
+    }
+
+
+}
 
 int main(int argc, char* argv[]) {
     // Grid specifications
@@ -106,7 +129,7 @@ int main(int argc, char* argv[]) {
     for (int i=xx_idx_start; i<xx_idx_end; ++i) {
         for (int j=yy_idx_start; j<yy_idx_end; ++j) {
             for (int k=zz_idx_start; k<zz_idx_end; ++k) {
-                h_T_curr[k*y_n*x_n + j*x_n + i] = T0;
+                h_T_curr[i*y_n*z_n + j*z_n + k] = T0;
             }
         }
     }
@@ -143,7 +166,7 @@ int main(int argc, char* argv[]) {
             for (int i=xx_idx_start; i<xx_idx_end; ++i) {
                 for (int j=yy_idx_start; j<yy_idx_end; ++j) {
                     for (int k=zz_idx_start; k<zz_idx_end; ++k) {
-                        avg_t += h_T_curr[k*y_n*x_n + j*x_n + i];
+                        avg_t += h_T_curr[i*y_n*z_n + j*z_n + k];
                     }
                 }
             }
