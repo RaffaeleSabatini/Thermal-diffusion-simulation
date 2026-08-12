@@ -54,7 +54,13 @@ __global__ void naive_simulation_loop(const float* T_curr, float* T_next, const 
 //__global__ void optimal_loop_simulation
 
 
-__global__ void compute_temperatures(const float* T, double* R, const Grid grid, const int* h_pos) {
+__global__ void compute_temperatures(const float* T, float2* R, const Grid grid, const int* h_pos) {
+    int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
+
+    int h_xmin = h_pos[0], h_xmax = h_pos[1];
+    int h_ymin = h_pos[2], h_ymax = h_pos[3];
+    int h_zmin = h_pos[4], h_zmax = h_pos[5];
+
     int tid_x = threadIdx.x;
     int tid_y = threadIdx.y;
     int tid_z = threadIdx.z;
@@ -63,36 +69,45 @@ __global__ void compute_temperatures(const float* T, double* R, const Grid grid,
     int start_y = 2 * blockDim.y * blockIdx.y;
     int start_z = 2 * blockDim.z * blockIdx.z;
 
-    const int y_n=grid.y_n, z_n=grid.z_n;
+    // Mapping unique (3D-)thread index onto shared memory 
+    int s_tid = tid_x * blockDim.y * blockDim.z + tid_y * blockDim.z + tid_z; 
+    __shared__ float2 partial_sum[THREADS_PER_BLOCK];
 
-    int s_tid = tid_x * blockDim.y * blockDim.z + tid_y * blockDim.z + tid_z; // Thread index in shared memory
-    int t_tid = (start_x+tid_x) * y_n * z_n + (start_y+tid_y) * z_n + (start_z+tid_z);
+    float T_in = 0.;
+    float T_out = 0.;
 
-    // Fill shared memory 
-    __shared__ float partial_sum[8*THREADS_PER_BLOCK];
-    //__shared__ float t_out[8*THREADS_PER_BLOCK];
+    // Compilator unrolls nested loops into sequential assembly code
+    #pragma unroll
+    for (int i=0; i<2; ++i) {
+        for (int j=0; j<2; ++j) {
+            for (int k=0; k<2; ++k) {
+                
+                int t_tid_x = start_x + tid_x + (i*blockDim.x);
+                int t_tid_y = start_y + tid_y + (j*blockDim.y);
+                int t_tid_z = start_z + tid_z + (k*blockDim.z);
 
-    // Threads block (i,j,k)-th reads tensor blocks (i+a,j+a,k+a)-th where a=0,1
-    partial_sum[s_tid] = T[t_tid]; // (i,j,k)
-    partial_sum[s_tid + 1*THREADS_PER_BLOCK] = T[t_tid + blockDim.z]; // (i,j,k+1)
-    partial_sum[s_tid + 2*THREADS_PER_BLOCK] = T[t_tid + blockDim.y * z_n]; // (i,j+1,k)
-    partial_sum[s_tid + 3*THREADS_PER_BLOCK] = T[t_tid + blockDim.x * y_n * z_n]; // (i+1,j,k)
-    partial_sum[s_tid + 4*THREADS_PER_BLOCK] = T[t_tid + (blockDim.y * z_n) + blockDim.z]; // (i,j+1,k+1)
-    partial_sum[s_tid + 5*THREADS_PER_BLOCK] = T[t_tid + (blockDim.x * y_n * z_n) + blockDim.z]; // (i+1,j,k+1)
-    partial_sum[s_tid + 6*THREADS_PER_BLOCK] = T[t_tid + (blockDim.x * y_n * z_n) + blockDim.y * z_n]; // (i+1,j+1,k)
-    partial_sum[s_tid + 7*THREADS_PER_BLOCK] = T[t_tid + (blockDim.x * y_n * z_n) + blockDim.y * z_n + blockDim.z]; // (i+1,j+1,k+1)
-    __syncthreads();
+                if ((t_tid_x < x_n) && (t_tid_y < y_n) && (t_tid_z < z_n)) {
+                    float val = T[t_tid_x*y_n*z_n + t_tid_y*z_n + t_tid_z];
 
-    // Performing (radix-8) reduction by exploiting 1-dimensionality of partial_sum
-    for (int i = 1; i < 8; i++) {
-        partial_sum[s_tid] += partial_sum[s_tid + i * THREADS_PER_BLOCK];
+                    bool inside = (t_tid_x >= h_xmin && t_tid_x < h_xmax) &&
+                                  (t_tid_y >= h_ymin && t_tid_y < h_ymax) && 
+                                  (t_tid_z >= h_zmin && t_tid_z < h_zmax);
+                    
+                    if (inside) T_in += val;
+                    else        T_out += val;
+                }
+            }
+        }
     }
+
+    partial_sum[s_tid] = make_float2(T_out, T_in);
     __syncthreads();
 
-    // Performing (radix-2) reduction
-    for (int stride = THREADS_PER_BLOCK / 2; stride > 0; stride /= 2) {
-        if (s_tid < stride) {
-            partial_sum[s_tid] += partial_sum[s_tid + stride];
+    // Performing reduction
+    for (int stride = 2; stride <= THREADS_PER_BLOCK; stride *= 2) {
+        if (s_tid < THREADS_PER_BLOCK/stride) {
+            partial_sum[s_tid].x += partial_sum[s_tid + THREADS_PER_BLOCK/stride].x;
+            partial_sum[s_tid].y += partial_sum[s_tid + THREADS_PER_BLOCK/stride].y;
         }
         __syncthreads();
     }
@@ -119,7 +134,7 @@ int main(int argc, char* argv[]) {
     const float zz_pos = (z_len-zz_len)/2;
 
     // We add a heater at temperature T
-    float T = 300, T0 = 300;
+    float T = 300, T0 = 280;
     float dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = 1e-6;  
     printf("\n------------------------------------------------------\n");
     printf("Running heat transfer simulation with:\n");
@@ -143,12 +158,19 @@ int main(int argc, char* argv[]) {
     int p_in = (xx_idx_end-xx_idx_start)*(yy_idx_end-yy_idx_start)*(zz_idx_end-zz_idx_start);
 
     printf("• Points along (x,y,z) in the internal system: %d, %d, %d (total: %d)\n", xx_idx_end-xx_idx_start, yy_idx_end-yy_idx_start, zz_idx_end-zz_idx_start, p_in);
-
+    
+    dim3 blockSize(THREADS_PER_SIDE, THREADS_PER_SIDE, THREADS_PER_SIDE);
+    dim3 gridSize(
+        (x_n + 2*blockSize.x - 1)/(2*blockSize.x),
+        (y_n + 2*blockSize.y - 1)/(2*blockSize.y),
+        (z_n + 2*blockSize.z - 1)/(2*blockSize.z)
+    );
     int dim = x_n*y_n*z_n;
-    int n_blocks = (dim + THREADS_PER_BLOCK - 1)/THREADS_PER_BLOCK;
+    int n_blocks = gridSize.x * gridSize.y * gridSize.z;
+
     std::vector<float> h_T_curr(dim, T);
     std::vector<float> h_T_next(dim, T);
-    std::vector<double> h_R(n_blocks, 0);
+    std::vector<float2> h_R(n_blocks, make_float2(0., 0.));
     Grid grid(x_n, y_n, z_n, dx, dy, dz, dt, a_w, a_c);
     int h_heater_id[6] = {
         xx_idx_start, xx_idx_end,
@@ -168,11 +190,11 @@ int main(int argc, char* argv[]) {
     // Allocate space on device
     float *d_T_curr;
     float *d_T_next;
-    double *d_R;
+    float2 *d_R;
     int *d_heater_id;
     cudaMalloc((void**)&d_T_curr, dim*sizeof(float));
     cudaMalloc((void**)&d_T_next, dim*sizeof(float));
-    cudaMalloc((void**)&d_R, n_blocks*sizeof(double));
+    cudaMalloc((void**)&d_R, n_blocks*sizeof(float2));
     cudaMalloc((void**)&d_heater_id, 6*sizeof(int));
 
     // Copy data on GPU
@@ -181,12 +203,6 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_heater_id, h_heater_id, 6*sizeof(int), cudaMemcpyHostToDevice);
 
     // Simulation loop
-    dim3 blockSize(THREADS_PER_SIDE, THREADS_PER_SIDE, THREADS_PER_SIDE);
-    dim3 gridSize(
-        (x_n + 2*blockSize.x - 1)/(2*blockSize.x),
-        (y_n + 2*blockSize.y - 1)/(2*blockSize.y),
-        (z_n + 2*blockSize.z - 1)/(2*blockSize.z)
-    );
     for (int tau=0; tau<t_n; ++tau) {
         // Execute simulation loop
         // naive_simulation_loop<<<gridSize, blockSize>>>(d_T_curr, d_T_next, d_heater_id, grid);
@@ -194,22 +210,22 @@ int main(int argc, char* argv[]) {
         if (tau%200==0) {
             // Compute avg temperatures with kernels
             compute_temperatures<<<gridSize, blockSize>>>(d_T_curr, d_R, grid, d_heater_id);
-            cudaMemcpy(h_R.data(), d_R, n_blocks*sizeof(double), cudaMemcpyDeviceToHost);
-            double avg_t = 0;
+            cudaMemcpy(h_R.data(), d_R, n_blocks*sizeof(float2), cudaMemcpyDeviceToHost);
+            float t_in = 0, t_out = 0;
             for (int i=0; i < n_blocks; i++) {
-                avg_t += (double) h_R[i];
+                t_in += h_R[i].y/p_in;
+                t_out += h_R[i].x/(dim-p_in);
             }
-            avg_t /= dim;
-            printf("(KERNEL/TOTAL) T(%d) = %1.3e\n", tau, avg_t);
+            printf("(KERNEL/TOTAL) Tin(%d) = %1.3f ----- Tout(%d) = %1.3f\n", tau, t_in, tau, t_out);
 
             // Compute avg temperatures in a non-optimal way (just to debug)
             cudaMemcpy(h_T_curr.data(), d_T_curr, dim*sizeof(float), cudaMemcpyDeviceToHost);
-            avg_t = 0;
+            float avg_t = 0;
 
             for (int i=xx_idx_start; i<xx_idx_end; ++i) {
                 for (int j=yy_idx_start; j<yy_idx_end; ++j) {
                     for (int k=zz_idx_start; k<zz_idx_end; ++k) {
-                        avg_t += (double) h_T_curr[i*y_n*z_n + j*z_n + k];
+                        avg_t += h_T_curr[i*y_n*z_n + j*z_n + k];
                     }
                 }
             }
