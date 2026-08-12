@@ -2,7 +2,11 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <math.h>
 #include <cuda_runtime.h>
+
+constexpr int THREADS_PER_SIDE = 8;
+constexpr int THREADS_PER_BLOCK = (int) std::pow(THREADS_PER_SIDE, 3);
 
 // Encapsulate grid infos in a single structure
 struct Grid {
@@ -50,27 +54,66 @@ __global__ void naive_simulation_loop(const float* T_curr, float* T_next, const 
 //__global__ void optimal_loop_simulation
 
 
-__global__ void compute_temperatures(const float T, const Grid grid, const* int h_pos) {
-    int x_id = blockDim.x * blockIdx.x + threadIdx.x;
-    int y_id = blockDim.y * blockIdx.y + threadIdx.y;
-    int z_id = blockDim.z * blockIdx.z + threadIdx.z;
+__global__ void compute_temperatures(const float* T, float* R, const Grid grid, const* int h_pos) {
+    int tid_x = threadIdx.x;
+    int tid_y = threadIdx.y;
+    int tid_z = threadIdx.z;
 
-    // The number of threads initially needed is 1/8 of the tensor size
-    // At each iteration every thread computes the sum of 8 values of the tensor
-    __shared__ float TEMP[];
+    int start_x = 2 * blockDim.x * blockIdx.x;
+    int start_y = 2 * blockDim.y * blockIdx.y;
+    int start_z = 2 * blockDim.z * blockIdx.z;
 
-    if ((x_id>=h_pos[0] && x_id<h_pos[1]) && 
-        (y_id>=h_pos[2] && y_id<h_pos[3]) &&
-        (z_id>=h_pos[4] && z_id<h_pos[5])
-    ) {
-        for (int step=1; step <= std::max(x_n, y_n, z_n); step*=2) {
-            __syncthreads();
+    const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
 
+    int start_id = start_x*y_n*z_n + start_y*z_n + start_z;
+    int tid      = tid_x * blockDim.y * blockDim.z + tid_y * blockDim.z + tid_z;
 
+    // Fill shared memory 
+    __shared__ float partial_sum[8*THREADS_PER_BLOCK];
+
+    // Threads block (i,j,k)-th reads tensor blocks (i+a,j+a,k+a)-th where a=0,1
+    partial_sum[tid] = T[start_id + tid]; // (i,j,k)
+    partial_sum[tid + blockDim.z] = T[start_id + tid + blockDim.z]; // (i,j,k+1)
+    partial_sum[tid + blockDim.y * blockDim.z] = T[start_id + tid + blockDim.y * blockDim.z]; // (i,j+1,k)
+    partial_sum[tid + blockDim.x * blockDim.y * blockDim.z] = T[start_id + tid + blockDim.x * blockDim.y * blockDim.z]; // (i+1,j,k)
+    partial_sum[tid + (blockDim.y+1) * blockDim.z] = T[start_id + tid + (blockDim.y+1) * blockDim.z]; // (i,j+1,k+1)
+    partial_sum[tid + (blockDim.y*blockDim.x+1) * blockDim.z] = T[start_id + tid + (blockDim.y*blockDim.x+1) * blockDim.z]; // (i+1,j,k+1)
+    partial_sum[tid + (blockDim.x+1) * blockDim.y * blockDim.z] = T[start_id + tid + (blockDim.x+1) * blockDim.y * blockDim.z]; // (i+1,j+1,k)
+    partial_sum[tid + blockDim.z * (1 + blockDim.y * (1 + blockDim.x))] = T[start_id + tid + blockDim.z * (1 + blockDim.y * (1 + blockDim.x))]; // (i+1,j+1,k+1)
+
+    // Performing reduction along each axis separately
+    // Along z-axis
+    for (int stride=1; stride <= blockDim.z; stride*=2) {
+        __syncthreads();
+        if (tid_z < blockDim.z/stride) {
+            partial_sum[tid] += partial_sum[tid + blockDim.z/stride];
+            partial_sum[tid + blockDim.y * blockDim.z] += partial_sum[tid + blockDim.y * blockDim.z + blockDim.z/stride];
+            partial_sum[tid + blockDim.x * blockDim.y * blockDim.z] += partial_sum[tid + blockDim.x * blockDim.y * blockDim.z + blockDim.z/stride];
+            partial_sum[tid + (1+blockDim.x) * blockDim.y * blockDim.z] += partial_sum[tid + (1+blockDim.x) * blockDim.y * blockDim.z + blockDim.z/stride];
         }
     }
 
+    // Along y-axis
+    for (int stride=1; stride <= blockDim.y; stride*=2) {
+        __syncthreads();
+        if ((tid_y < blockDim.y/stride) && tid_z==0) { // Possibile errore: tid_z = 0 o 1?
+            partial_sum[tid] += partial_sum[tid + blockDim.y*blockDim.z/stride];
+            partial_sum[tid + blockDim.x * blockDim.y * blockDim.z] += partial_sum[tid + blockDim.x * blockDim.y * blockDim.z + blockDim.y*blockDim.z/stride];
+        }
+    }
 
+    // Along x-axis
+    for (int stride=1; stride<= blockDim.x; stride*=2) {
+        __syncthreads();
+        if ((tid_x < blockDim.x/stride) && tid_z==0 && tid_y==0) {
+            partial_sum[tid] += partial_sum[tid + blockDim.x * blockDim.y * blockDim.z/stride];
+        }
+    }
+
+    __syncthreads();
+    if (tid == 0) {
+        R[blockIdx.x * blockDim.y * blockDim.z + blockIdx.y * blockDim.z + blockIdx.z] = partial_sum[0];
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -116,8 +159,10 @@ int main(int argc, char* argv[]) {
     printf("• Points along (x,y,z) in the internal system: %d, %d, %d (total: %d)\n", xx_idx_end-xx_idx_start, yy_idx_end-yy_idx_start, zz_idx_end-zz_idx_start, p_in);
 
     int dim = x_n*y_n*z_n;
+    int n_blocks = (dim + THREADS_PER_BLOCK - 1)/THREADS_PER_BLOCK;
     std::vector<float> h_T_curr(dim, T);
     std::vector<float> h_T_next(dim, T);
+    std::vector<float> h_R(n_blocks, 0);
     Grid grid(x_n, y_n, z_n, dx, dy, dz, dt, a_w, a_c);
     int h_heater_id[6] = {
         xx_idx_start, xx_idx_end,
@@ -137,9 +182,11 @@ int main(int argc, char* argv[]) {
     // Allocate space on device
     float *d_T_curr;
     float *d_T_next;
+    float *d_R;
     int *d_heater_id;
     cudaMalloc((void**)&d_T_curr, dim*sizeof(float));
     cudaMalloc((void**)&d_T_next, dim*sizeof(float));
+    cudaMalloc((void**)&d_R, n_blocks*sizeof(float));
     cudaMalloc((void**)&d_heater_id, 6*sizeof(int));
 
     // Copy data on GPU
@@ -148,7 +195,7 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_heater_id, h_heater_id, 6*sizeof(int), cudaMemcpyHostToDevice);
 
     // Simulation loop
-    dim3 blockSize(8, 8, 8);
+    dim3 blockSize(THREADS_PER_SIDE, THREADS_PER_SIDE, THREADS_PER_SIDE);
     dim3 gridSize(
         (x_n + blockSize.x - 1)/blockSize.x,
         (y_n + blockSize.y - 1)/blockSize.y,
@@ -159,6 +206,16 @@ int main(int argc, char* argv[]) {
         naive_simulation_loop<<<gridSize, blockSize>>>(d_T_curr, d_T_next, d_heater_id, grid);
 
         if (tau%200==0) {
+            // Compute avg temperatures with kernels
+            compute_temperatures(d_T_curr, d_R, grid, h_pos);
+            cudaMemcpy(h_R.data(), d_R, n_blocks*sizeof(float), cudaMemcpyDeviceToHost);
+            float avg_t = 0;
+            for (auto& r: h_R) {
+                avg_t += r;
+            }
+            avg_t /= dim;
+            printf("(KERNEL/TOTAL) T(%d) = %1.3e\n", tau, avg_t);
+
             // Compute avg temperatures in a non-optimal way (just to debug)
             cudaMemcpy(h_T_curr.data(), d_T_curr, dim*sizeof(float), cudaMemcpyDeviceToHost);
             float avg_t = 0;
@@ -171,7 +228,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             avg_t /= p_in;
-            printf("T(%d) = %1.3e\n", tau, avg_t);
+            printf("(SEQUENTIAL/INTERNAL) T(%d) = %1.3e\n", tau, avg_t);
         }
 
         std::swap(d_T_curr, d_T_next);
