@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 #include <math.h>
+#include <chrono>
 #include <cuda_runtime.h>
 
 constexpr int THREADS_PER_SIDE = 8;
@@ -218,7 +219,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-
     // Grid specifications
     int t_n = 2000;
     int x_n = 100, y_n = 100, z_n = 100;
@@ -235,7 +235,7 @@ int main(int argc, char* argv[]) {
     const float zz_pos = (z_len-zz_len)/2;
 
     // We add a heater at temperature T
-    float T = 300, T0 = 280;
+    float T = 300, T0 = 260;
     float dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = 1e-6;  
     printf("\n------------------------------------------------------\n");
     printf("Running heat transfer simulation with:\n");
@@ -258,7 +258,7 @@ int main(int argc, char* argv[]) {
     int zz_idx_start = zz_pos/dz, zz_idx_end = (zz_pos+zz_len)/dz;
     int p_in = (xx_idx_end-xx_idx_start)*(yy_idx_end-yy_idx_start)*(zz_idx_end-zz_idx_start);
 
-    printf("• Points along (x,y,z) in the internal system: %d, %d, %d (total: %d)\n", xx_idx_end-xx_idx_start, yy_idx_end-yy_idx_start, zz_idx_end-zz_idx_start, p_in);
+    printf("• Points along (x,y,z) in the internal system: %d, %d, %d (total: %d)\n\n", xx_idx_end-xx_idx_start, yy_idx_end-yy_idx_start, zz_idx_end-zz_idx_start, p_in);
     
     // Setting block size and grid size
     int dim = x_n*y_n*z_n;
@@ -311,7 +311,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error! " << f_name << " cannot be open!" << std::endl;
             return 1;
         } else {
-            file << "iterat. internal-T external-T elapsed-time" << std::endl;
+            file << "iteration internal-T external-T loop-time(ms) wall-time(ms)" << std::endl;
         }
     }
 
@@ -330,29 +330,53 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_T_next, h_T_next.data(), dim*sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_heater_id, h_heater_id, 6*sizeof(int), cudaMemcpyHostToDevice);
 
+    // Measure wall time
+    auto simulation_s = std::chrono::system_clock::now();
+    
     // Simulation loop
     for (int tau=0; tau<=t_n; ++tau) {
+        // Measure time for benchmark
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+
+        float loop_time, calcT_time;
+
         // Execute simulation loop
+        cudaEventRecord(start, 0);
         if (use_tiling)
             optimal_loop_simulation<<<simulGridSize, blockSize>>>(d_T_curr, d_T_next, d_heater_id, grid);
         else
             naive_simulation_loop<<<simulGridSize, blockSize>>>(d_T_curr, d_T_next, d_heater_id, grid);
+        cudaEventRecord(stop, 0);
+        cudaEventSynchronize(stop);
 
-        if (tau%200==0 && show_verbosity) {
-            // Compute avg temperatures with kernels
-            compute_temperatures<<<tempGridSize, blockSize>>>(d_T_curr, d_R, grid, d_heater_id);
-            cudaMemcpy(h_R.data(), d_R, n_blocks*sizeof(float2), cudaMemcpyDeviceToHost);
-            float t_in = 0, t_out = 0;
-            for (int i=0; i < n_blocks; i++) {
-                t_in += h_R[i].y/p_in;
-                t_out += h_R[i].x/(dim-p_in);
-            }
-            printf("\nIteration: %d ----- Tin = %1.4f ----- Tout = %1.4f\n", tau, t_in, t_out);
+        // Compute elapsed time
+        cudaEventElapsedTime(&loop_time, start, stop);
+        
+        // ----------------------------------------------------------------------
+        // AVERAGE TEMPERATURES
+        // ----------------------------------------------------------------------
+        cudaEventRecord(start, 0);
+        compute_temperatures<<<tempGridSize, blockSize>>>(d_T_curr, d_R, grid, d_heater_id);
+        cudaEventRecord(stop, 0);
+        cudaEventSynchronize(stop);
+
+        // Compute elapsed time
+        cudaEventElapsedTime(&calcT_time, start, stop);
+
+        cudaMemcpy(h_R.data(), d_R, n_blocks*sizeof(float2), cudaMemcpyDeviceToHost);
+        float t_in = 0, t_out = 0;
+        for (int i=0; i < n_blocks; i++) {
+            t_in += h_R[i].y/p_in;
+            t_out += h_R[i].x/(dim-p_in);
+        }
             
-            // Save avg temperature and time
-            if (save_data) {
-                //file <<  tau << " " << t_in << " " << t_out  << " " << omp_get_wtime()-start << "\n";
-            }
+        if (tau%200==0 && show_verbosity) {
+            printf("\nIteration: %d\n", tau);
+            printf("\nTin = %1.4f ----- Tout = %1.4f\n", t_in, t_out);
+            printf("\nLoop time = %1.4f ----- Computing-T time = %1.4f\n", loop_time, calcT_time);
+            printf("----------------------------------------------------\n");
 
             // // Compute avg temperatures in a non-optimal way (just to debug)
             // cudaMemcpy(h_T_curr.data(), d_T_curr, dim*sizeof(float), cudaMemcpyDeviceToHost);
@@ -368,7 +392,18 @@ int main(int argc, char* argv[]) {
             // avg_t /= p_in;
             // printf("(SEQUENTIAL/INTERNAL) T(%d) = %1.3e\n", tau, avg_t);
         }
+        
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
 
+        // Save avg temperature and time
+        if (save_data) {
+            auto simulation_e = std::chrono::system_clock::now();
+            auto wallt = std::chrono::duration_cast<std::chrono::milliseconds>(simulation_e-simulation_s); 
+            file << tau << " " << t_in << " " << t_out  << " " << loop_time << " " << wallt.count() << "\n";
+        }
+
+        // Swap tensors to use d_T_next as a buffer
         std::swap(d_T_curr, d_T_next);
     }
 
