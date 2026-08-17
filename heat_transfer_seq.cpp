@@ -2,31 +2,31 @@
 #include <math.h>
 #include <utility>
 #include <vector>
+#include <iomanip>
 
 int main(int argc, char *argv[]) {
 
     // Grid specifications
-    int t_n = 1000;
+    int t_n = 2000;
     int x_n = 100, y_n = 100, z_n = 100;
     int tol = 10;
 
     // Systems physical dimensions (space: mm, time: sec)
-    const float x_len = 10., y_len = 10., z_len = 10., t_len = 0.001;
-    const float xx_len = 2, yy_len = 2, zz_len = 2;
-    const float a_w = 0.143, a_c = 111;
+    const double x_len = 10., y_len = 10., z_len = 10.;
+    const double xx_len = 2, yy_len = 2, zz_len = 2;
+    const double a_w = 0.143, a_c = 111;
 
     // Position of internal heater
-    const float xx_pos = (x_len-xx_len)/2;
-    const float yy_pos = (y_len-yy_len)/2;
-    const float zz_pos = (z_len-zz_len)/2;
+    const double xx_pos = (x_len-xx_len)/2;
+    const double yy_pos = (y_len-yy_len)/2;
+    const double zz_pos = (z_len-zz_len)/2;
+ 
+    // T: heater temperature     T0: water temperature
+    double T = 300, T0 = 280;
+    std::vector<double> T_curr(x_n*y_n*z_n, T0);
+    std::vector<double> T_next(x_n*y_n*z_n, T0);
 
-    // Temperature field 
-    std::vector<double> T_curr(x_n*y_n*z_n, 273);
-    std::vector<double> T_next(x_n*y_n*z_n, 273);
-
-    // We add a heater at temperature T0
-    float T0 = 300;
-    float dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = t_len/t_n;
+    double dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = 1e-6;
     printf("\n---------------------------------------\n\n");
     printf("Running heat transfer simulation with:\n\n");
     printf("Points along (x,y,z): %d, %d, %d (total: %d)\n\n", x_n, y_n, z_n, x_n*y_n*z_n);
@@ -52,15 +52,17 @@ int main(int argc, char *argv[]) {
     for (int i=xx_idx_start; i<xx_idx_end; ++i) {
         for (int j=yy_idx_start; j<yy_idx_end; ++j) {
             for (int k=zz_idx_start; k<zz_idx_end; ++k) {
-                T_curr[i*y_n*z_n + j*z_n + k] = T0;
+                T_curr[i*y_n*z_n + j*z_n + k] = T;
             }
         }
     }
 
     // Simulation loop
-    for (int tau=0; tau<t_n; tau++) {
-        float sum = 0;
-
+    for (int tau=0; tau<=t_n; tau++) {
+        // Note: superficial points are not iterated over in the loop because are kept fixed by boundary conditions
+        double sum_out = 0, sum_in  = 0;
+        int count_in = 0, count_out = 0;
+          
         // Boundary conditions: surface of the box is at constant T ----> Not updated
         for (int i=1; i<(x_n-1); ++i) {
             for (int j=1; j<(y_n-1); ++j) {
@@ -82,9 +84,14 @@ int main(int argc, char *argv[]) {
                         a = a_c; 
 
                         // We measure the average temperature of the heater
-                        sum += T_curr[i*y_n*z_n+j*z_n+k];
+                        sum_in += T_curr[i*y_n*z_n+j*z_n+k];
+                        count_in += 1;
                     } else {
                         a = a_w;
+
+                        // Temperature of the water
+                        sum_out += T_curr[i*y_n*z_n+j*z_n+k];
+                        count_out += 1;
                     }
 
                     // Update rule
@@ -95,12 +102,10 @@ int main(int argc, char *argv[]) {
         std::swap(T_curr, T_next);
 
         // Compute cube avg temperature
-        if (tau % 10 == 0) {
-            double avg_t = sum/p_in;
-            printf("Avg temperature of the cube at iteration/time (%d/%1.3e): (%1.3f)\n", tau, tau*dt, avg_t);
-        }
+        double T_in  = sum_in/count_in;
+        double T_out = sum_out/count_out;
+        printf("Iter. %d ------ T_in (K): %1.6f ------ T_out-T0 (K): %1.3e\n", tau, T_in, T_out-T0);
     }
 
     return 0;
-
 }

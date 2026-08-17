@@ -6,50 +6,55 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <omp.h>
 
 // Encapsulate grid infos in a single structure
 struct Grid {
     int x_n, y_n, z_n;
-    float dx, dy, dz, dt;
-    float a_w, a_m;
+    double dx, dy, dz, dt;
+    double a_w, a_m;
 
-    Grid(int x_n, int y_n, int z_n, float dx, float dy, float dz, float dt, float a_w, float a_m) : 
+    Grid(int x_n, int y_n, int z_n, double dx, double dy, double dz, double dt, double a_w, double a_m) : 
         x_n(x_n), y_n(y_n), z_n(z_n),
         dx(dx), dy(dy), dz(dz), dt(dt),
         a_w(a_w), a_m(a_m) {}
 };
 
 // Simulation loop at given time without tiling strategy
-void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& t_in, float& t_out) {
+void naive_simulation_loop(const Grid& grid, std::vector<double>& T_curr, std::vector<double>& T_next, int h_pos[6], double& t_in, double& t_out) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
-    const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
-    const float a_w = grid.a_w, a_m = grid.a_m;
+    const double dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
+    const double a_w = grid.a_w, a_m = grid.a_m;
+    int count_in = 0, count_out = 0;
 
     // Boundary conditions: surface of the box is at constant T 
     // => superficial tensor elements are not update
-    #pragma omp parallel for collapse(2) reduction(+:t_in, t_out) schedule(static)
+    #pragma omp parallel for collapse(2) reduction(+:t_in, t_out, count_in, count_out) schedule(static)
     for (int i=1; i<(x_n-1); ++i) {
         for (int j=1; j<(y_n-1); ++j) {
             int ij_idx = i*y_n*z_n + j*z_n;
             for (int k=1; k<(z_n-1); ++k) {
                 int idx = ij_idx + k;
-                float laplacian = (
+                double laplacian = (
                     (T_curr[idx + y_n*z_n] - 2*T_curr[idx] + T_curr[idx - y_n*z_n])/dx2 + 
                     (T_curr[idx + z_n]     - 2*T_curr[idx] + T_curr[idx - z_n])/(dy2) + 
                     (T_curr[idx + 1]       - 2*T_curr[idx] + T_curr[idx - 1])/(dz2) 
                 );
 
                 // Use correct thermal diffusivity depending on position
-                float a;
+                double a;
                 if ((i>=h_pos[0] && i<h_pos[1]) && 
                     (j>=h_pos[2] && j<h_pos[3]) &&
                     (k>=h_pos[4] && k<h_pos[5])) {    
                     a = a_m; 
                     t_in += T_curr[idx];
+                    count_in += 1;
                 } else {
                     a = a_w;
                     t_out += T_curr[idx];
+                    count_out += 1;
                 }
 
                 // Update rule
@@ -57,21 +62,26 @@ void naive_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::ve
             }  
         }
     }
+
+    // Compute averages
+    t_in  /= count_in;
+    t_out /= count_out;
 }   
 
 // Simulation loop with tiling strategy
-void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::vector<float>& T_next, int h_pos[6], float& t_in, float& t_out) {
+void tiling_simulation_loop(const Grid& grid, std::vector<double>& T_curr, std::vector<double>& T_next, int h_pos[6], double& t_in, double& t_out) {
     const int x_n=grid.x_n, y_n=grid.y_n, z_n=grid.z_n;
     const int slide = y_n*z_n;
-    const float dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
-    const float a_w = grid.a_w, a_m = grid.a_m;
+    const double dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
+    const double a_w = grid.a_w, a_m = grid.a_m;
     const int Bx = 16, By = 16, Bz = 16; // Dimensions of tiles
+    int count_in = 0, count_out = 0;
 
     /* Each block is assigned to one thread:
         - 3 external loops are used to select blocks
         - 3 internal loops are used to select entries 
     */
-    #pragma omp parallel for collapse(2) reduction(+:t_in) reduction(+:t_out)
+    #pragma omp parallel for collapse(2) reduction(+:t_in, t_out, count_in, count_out)
     for (int ii=1; ii<x_n-1; ii+=Bx) {
         for (int jj=1; jj<y_n-1; jj+=By) {
             // Avoid access out-of-index
@@ -87,22 +97,24 @@ void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::v
                         for (int k=kk; k<k_max; ++k) {
 
                             int idx = ij_idx + k;
-                            float laplacian = (
+                            double laplacian = (
                                 (T_curr[idx + slide] - 2*T_curr[idx] + T_curr[idx - slide])/dx2 + 
                                 (T_curr[idx + z_n]   - 2*T_curr[idx] + T_curr[idx - z_n])/dy2 + 
                                 (T_curr[idx + 1]     - 2*T_curr[idx] + T_curr[idx - 1])/dz2 
                             );
 
                             // Use correct thermal diffusivity depending on position
-                            float a;
+                            double a;
                             if ((i>=h_pos[0] && i<h_pos[1]) && 
                                 (j>=h_pos[2] && j<h_pos[3]) &&
                                 (k>=h_pos[4] && k<h_pos[5])) {    
                                 a = a_m; 
                                 t_in += T_curr[idx];
+                                count_in += 1;
                             } else {
                                 a = a_w;
                                 t_out += T_curr[idx];
+                                count_out += 1;
                             }
 
                             // Update rule
@@ -113,6 +125,8 @@ void tiling_simulation_loop(const Grid& grid, std::vector<float>& T_curr, std::v
             }
         }
     }
+    t_in  /= count_in;
+    t_out /= count_out;
 }
 
 int main(int argc, char *argv[]) {
@@ -150,18 +164,18 @@ int main(int argc, char *argv[]) {
     int tol = 10;
 
     // Systems physical dimensions (space: mm, time: sec)
-    const float x_len = 10., y_len = 10., z_len = 10.;
-    const float xx_len = 2, yy_len = 2, zz_len = 2;
-    const float a_w = 0.143, a_c = 111;
+    const double x_len = 10., y_len = 10., z_len = 10.;
+    const double xx_len = 2, yy_len = 2, zz_len = 2;
+    const double a_w = 0.143, a_c = 111;
 
     // Position of internal heater
-    const float xx_pos = (x_len-xx_len)/2;
-    const float yy_pos = (y_len-yy_len)/2;
-    const float zz_pos = (z_len-zz_len)/2;
+    const double xx_pos = (x_len-xx_len)/2;
+    const double yy_pos = (y_len-yy_len)/2;
+    const double zz_pos = (z_len-zz_len)/2;
 
-    // We add a heater at temperature T0
-    float T0 = 300;
-    float dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = 1e-6;  
+    // T: heater temperature     T0: water temperature
+    double T = 300, T0 = 280;
+    double dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = 1e-6;  
     printf("\n------------------------------------------------------\n");
     printf("Running heat transfer simulation with:\n");
     printf("• Points along (x,y,z): %d, %d, %d (total: %d)\n", x_n, y_n, z_n, x_n*y_n*z_n);
@@ -201,10 +215,16 @@ int main(int argc, char *argv[]) {
         // Open file 
         std::ofstream file;
         if (save_data) {
-            std::string f_name = "avg_temp-";
-            f_name += "n_threads" + std::to_string(n_threads)+"-";
-            f_name += "points" + std::to_string(x_n*y_n*z_n)+"-";
-            f_name += "n_t" + std::to_string(t_n)+".txt";
+            std::string f_name = "omp_avg_temp";
+
+            if (use_tiling) f_name += "-tiling";
+            
+            f_name += "-n_threads" + std::to_string(n_threads);
+            f_name += 
+            "-x" + std::to_string(x_n) + 
+            "-y" + std::to_string(y_n) +
+            "-z" + std::to_string(z_n) +
+            "-t" + std::to_string(t_n)+".txt";
 
             file.open(f_name);
             if (!file.is_open()) {
@@ -219,25 +239,25 @@ int main(int argc, char *argv[]) {
         omp_set_num_threads(n_threads);
 
         // Temperature field 
-        std::vector<float> T_curr(x_n*y_n*z_n, 280);
-        std::vector<float> T_next(x_n*y_n*z_n, 280);
+        std::vector<double> T_curr(x_n*y_n*z_n, T0);
+        std::vector<double> T_next(x_n*y_n*z_n, T0);
 
         // Setting initial temperature of the internal heater
         for (int i=xx_idx_start; i<xx_idx_end; ++i) {
             for (int j=yy_idx_start; j<yy_idx_end; ++j) {
                 for (int k=zz_idx_start; k<zz_idx_end; ++k) {
-                    T_curr[i*y_n*z_n + j*z_n + k] = T0;
+                    T_curr[i*y_n*z_n + j*z_n + k] = T;
                 }
             }
         }
 
         // Executing simulation 
         double start = omp_get_wtime();
-        for (int tau=0; tau<t_n; tau++) {
+        for (int tau=0; tau<=t_n; tau++) {
 
             // avg temperatures of internal block and external material
-            float t_in = 0;
-            float t_out = 0;
+            double t_in  = 0;
+            double t_out = 0;
 
             if (use_tiling)
                 tiling_simulation_loop(grid, T_curr, T_next, heater_id, t_in, t_out);
@@ -245,17 +265,20 @@ int main(int argc, char *argv[]) {
                 naive_simulation_loop(grid, T_curr, T_next, heater_id, t_in, t_out);
 
             std::swap(T_curr, T_next);
-            t_in /= p_in;
-            t_out /= (x_n*y_n*z_n-p_in);
 
-            // Show avg temperature
-            if ((tau % 100 == 0) && show_verbosity) {
-                printf("Iteration: %d/%d ------ Time: %1.3e ------ Internal Temp.: (%1.3f)\n", tau, t_n, tau*dt, t_in);
+            // Show avg temperatures
+            if (show_verbosity) {
+                printf("Iteration: %d ------ T_in (K): %1.6f ------ T_out-T0 (K): (%1.3e)\n", tau, t_in, t_out-T0);
             }
 
-            // Save avg temperature and time
+            // Save avg temperatures and time
             if (save_data) {
-                file <<  tau << " " << t_in << " " << t_out  << " " << omp_get_wtime()-start << "\n";
+                file << std::setprecision(std::numeric_limits<double>::max_digits10) <<
+                    tau << " " <<
+                    t_in << " " << 
+                    t_out  << " " << 
+                    omp_get_wtime()-start << 
+                    "\n";
             }
         }
 
