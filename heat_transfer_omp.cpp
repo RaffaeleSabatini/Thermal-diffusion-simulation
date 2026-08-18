@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <omp.h>
@@ -210,6 +211,20 @@ int main(int argc, char *argv[]) {
     int initial_thr_num = scale_threads ? 1 : omp_get_max_threads();
     int final_thr_num   = omp_get_max_threads();
 
+    std::filesystem::path dir_path;
+    if (scale_threads && save_data) {
+        std::string dir_name = "thread-scaling";
+        dir_path = dir_name;
+
+        if (std::filesystem::create_directory(dir_path)) {
+            std::cout << "Creating directory '" << dir_name << "'." << "\n";
+        } else {
+            std::cout << "Directory '" << dir_name << "' already exists.\n";
+        }
+    } else {
+        dir_path = ".";
+    }
+
     for (int n_threads=initial_thr_num; n_threads<=final_thr_num; ++n_threads) {
 
         // Open file 
@@ -224,9 +239,10 @@ int main(int argc, char *argv[]) {
             "-x" + std::to_string(x_n) + 
             "-y" + std::to_string(y_n) +
             "-z" + std::to_string(z_n) +
-            "-t" + std::to_string(t_n)+".txt";
+            "-t" + std::to_string(t_n) +".txt";
 
-            file.open(f_name);
+            std::filesystem::path f_path = dir_path / f_name;
+            file.open(f_path);
             if (!file.is_open()) {
                 std::cerr << "Error! " << f_name << " cannot be open!" << std::endl;
                 return 1;
