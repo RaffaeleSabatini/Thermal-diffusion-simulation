@@ -74,7 +74,7 @@ void tiling_simulation_loop(const Grid& grid, std::vector<double>& T_curr, std::
     const int slide = y_n*z_n;
     const double dx2 = grid.dx*grid.dx, dy2 = grid.dy*grid.dy, dz2 = grid.dz*grid.dz, dt = grid.dt;
     const double a_w = grid.a_w, a_m = grid.a_m;
-    const int Bx = 16, By = 16, Bz = 16; // Dimensions of tiles
+    const int Bx = 32, By = 32, Bz = 32; // Dimensions of tiles
     int count_in = 0, count_out = 0;
 
     /* Each block is assigned to one thread:
