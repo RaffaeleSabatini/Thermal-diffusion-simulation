@@ -357,7 +357,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error! " << f_name << " cannot be open!" << std::endl;
             return 1;
         } else {
-            file << "iteration internal-T external-T loop-time(ms) wall-time(ms)" << std::endl;
+            file << "iteration internal-T external-T loop-time(ms) calcT-time(ms) wall-time(ms)" << std::endl;
         }
     }
 
