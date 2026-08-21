@@ -136,8 +136,9 @@ int main(int argc, char *argv[]) {
 
     bool save_data = false;        // save in a file temperature in function of time
     bool show_verbosity = false;   // show execution on terminal
-    bool use_tiling = false;       // use reduction directive (to implement different ones)
+    bool use_tiling = false;       // use "tiling" (simil-shared memory)
     bool scale_threads = false;    // execute the program for different values of n_threads
+    bool custom_vals = false;      // chose parameters of the system/grid
 
     // -------------------------------------------------------------------------------
     // Check arguments
@@ -152,6 +153,8 @@ int main(int argc, char *argv[]) {
                 use_tiling = true;
             } else if (arg == "--scale-thread") {
                 scale_threads = true;
+            } else if (arg == "--custom-vals") {
+                custom_vals = true;
             } else {
                 printf("Error! argumnt (%d) is not implemented!", i);
                 return 1;
@@ -160,14 +163,27 @@ int main(int argc, char *argv[]) {
     }
 
     // Grid specifications
-    int t_n = 2000;
+    int t_n = 1000;
     int x_n = 100, y_n = 100, z_n = 100;
-    int tol = 10;
 
     // Systems physical dimensions (space: mm, time: sec)
-    const double x_len = 10., y_len = 10., z_len = 10.;
-    const double xx_len = 2, yy_len = 2, zz_len = 2;
+    double x_len = 10., y_len = 10., z_len = 10.;
+    double xx_len = 2, yy_len = 2, zz_len = 2;
     const double a_w = 0.143, a_c = 111;
+
+    if (custom_vals) {
+        std::cout << "Enter number of points along (x,y,z):" << std::endl;
+        std::cin >> x_n >> y_n >> z_n;
+
+        std::cout << "Enter size (in mm) of external volume along (x,y,z)" << std::endl;
+        std::cin >> x_len >> y_len >> z_len;
+
+        std::cout << "Enter size (in mm) of internal volume along (x,y,z)" << std::endl;
+        std::cin >> xx_len >> yy_len >> zz_len;
+
+        std::cout << "Enter number of iterations:" << std::endl;
+        std::cin >> t_n;
+    }
 
     // Position of internal heater
     const double xx_pos = (x_len-xx_len)/2;
@@ -176,21 +192,21 @@ int main(int argc, char *argv[]) {
 
     // T: heater temperature     T0: water temperature
     double T = 300, T0 = 280;
-    double dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n, dt = 1e-6;  
+    double dx = x_len/x_n, dy = y_len/y_n, dz = z_len/z_n; 
+
+    // Time discretization must follow Von Neuman stability criterium
+    double a_max = std::max(a_w, a_c);
+    double inv_spatial_sum = (1/(dx*dx)) + (1/(dy*dy)) + (1/(dz*dz));
+    double dt_critical = 1/(2 * a_max * inv_spatial_sum);
+
+    double safety_factor = 0.8;
+    double dt = dt_critical * safety_factor;
+
     printf("\n------------------------------------------------------\n");
     printf("Running heat transfer simulation with:\n");
     printf("• Points along (x,y,z): %d, %d, %d (total: %d)\n", x_n, y_n, z_n, x_n*y_n*z_n);
     printf("• Step-size along (x,y,z,t): %1.3f, %1.3f, %1.3f, %1.3e\n", dx, dy, dz, dt);
     printf("• Duration of the simulation: %1.5e\n", dt*t_n);
-
-    // Veryfing we have enough points    
-    if (xx_len/dx<tol) {
-        printf("Error: not enough points (%d) along x in the small system.", (int)(xx_len/dx));
-    } else if (yy_len/dy<tol) {
-        printf("Error: not enough points (%d) along y in the small system.", (int)(yy_len/dy));
-    } else if (zz_len/dz<tol) {
-        printf("Error: not enough points (%d) along z in the small system.", (int)(z_len/dz));
-    }
 
     // Indices for heater position
     int xx_idx_start = xx_pos/dx, xx_idx_end = (xx_pos+xx_len)/dx;
@@ -230,16 +246,17 @@ int main(int argc, char *argv[]) {
         // Open file 
         std::ofstream file;
         if (save_data) {
-            std::string f_name = "omp_avg_temp";
+            std::string f_name = "omp";
 
             if (use_tiling) f_name += "-tiling";
             
             f_name += "-n_threads" + std::to_string(n_threads);
             f_name += 
-            "-x" + std::to_string(x_n) + 
-            "-y" + std::to_string(y_n) +
-            "-z" + std::to_string(z_n) +
-            "-t" + std::to_string(t_n) +".txt";
+                "-x" + std::to_string(x_n) + "_xl" + std::to_string(x_len) +
+                "-y" + std::to_string(y_n) + "_yl" + std::to_string(y_len) +
+                "-z" + std::to_string(z_n) + "_zl" + std::to_string(z_len) +
+                "-t" + std::to_string(t_n);
+            f_name += ".txt"; 
 
             std::filesystem::path f_path = dir_path / f_name;
             file.open(f_path);

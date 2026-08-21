@@ -237,7 +237,7 @@ int main(int argc, char* argv[]) {
 
     bool save_data = false;        // save in a file temperature in function of time
     bool show_verbosity = false;   // show execution on terminal
-    bool use_tiling = false;       // use reduction directive (to implement different ones)
+    bool use_tiling = false;       // use tiling
     bool custom_vals = false;      // chose parameters of the system/grid
 
     // -------------------------------------------------------------------------------
@@ -261,13 +261,12 @@ int main(int argc, char* argv[]) {
     }
 
     // Grid specifications
-    int t_n = 2000;
+    int t_n = 1000;
     int x_n = 100, y_n = 100, z_n = 100;
-    int tol = 10;
 
     // Systems physical dimensions (space: mm, time: sec)
     double x_len = 10., y_len = 10., z_len = 10.;
-    const double xx_len = 2, yy_len = 2, zz_len = 2;
+    double xx_len = 2, yy_len = 2, zz_len = 2;
     const double a_w = 0.143, a_c = 111;
 
     if (custom_vals) {
@@ -276,6 +275,9 @@ int main(int argc, char* argv[]) {
 
         std::cout << "Enter size (in mm) of external volume along (x,y,z)" << std::endl;
         std::cin >> x_len >> y_len >> z_len;
+
+        std::cout << "Enter size (in mm) of internal volume along (x,y,z)" << std::endl;
+        std::cin >> xx_len >> yy_len >> zz_len;
 
         std::cout << "Enter number of iterations:" << std::endl;
         std::cin >> t_n;
@@ -303,15 +305,6 @@ int main(int argc, char* argv[]) {
     printf("• Points along (x,y,z): %d, %d, %d (total: %d)\n", x_n, y_n, z_n, x_n*y_n*z_n);
     printf("• Step-size along (x,y,z,t): %1.3f, %1.3f, %1.3f, %1.3e\n", dx, dy, dz, dt);
     printf("• Duration of the simulation: %1.5e\n", dt*t_n);
-
-    // Veryfing we have enough points    
-    if (xx_len/dx<tol) {
-        printf("Error: not enough points (%d) along x in the small system.", (int)(xx_len/dx));
-    } else if (yy_len/dy<tol) {
-        printf("Error: not enough points (%d) along y in the small system.", (int)(yy_len/dy));
-    } else if (zz_len/dz<tol) {
-        printf("Error: not enough points (%d) along z in the small system.", (int)(z_len/dz));
-    }
 
     // Indices for heater position
     int xx_idx_start = xx_pos/dx, xx_idx_end = (xx_pos+xx_len)/dx;
@@ -368,10 +361,10 @@ int main(int argc, char* argv[]) {
         if (use_tiling) f_name += "-tiling";
         
         f_name += 
-        "-x" + std::to_string(x_n) + "_xl" + std::to_string(x_len) +
-        "-y" + std::to_string(y_n) + "_yl" + std::to_string(y_len) +
-        "-z" + std::to_string(z_n) + "_zl" + std::to_string(z_len) +
-        "-t" + std::to_string(t_n); 
+            "-x" + std::to_string(x_n) + "_xl" + std::to_string(x_len) +
+            "-y" + std::to_string(y_n) + "_yl" + std::to_string(y_len) +
+            "-z" + std::to_string(z_n) + "_zl" + std::to_string(z_len) +
+            "-t" + std::to_string(t_n); 
 
         f_name += ".txt";
 

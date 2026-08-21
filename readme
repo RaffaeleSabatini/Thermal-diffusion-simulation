@@ -1,0 +1,2 @@
+Compilation command for OMP file:
+g++ -std=c++17 -fopenmp heat_transfer_omp.cpp -o ht_omp.o -lstdc++fs
