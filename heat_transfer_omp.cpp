@@ -171,6 +171,7 @@ int main(int argc, char *argv[]) {
     double xx_len = 2, yy_len = 2, zz_len = 2;
     const double a_w = 0.143, a_c = 111;
 
+    std::string inputName;
     if (custom_vals) {
         std::cout << "Enter number of points along (x,y,z):" << std::endl;
         std::cin >> x_n >> y_n >> z_n;
@@ -183,6 +184,11 @@ int main(int argc, char *argv[]) {
 
         std::cout << "Enter number of iterations:" << std::endl;
         std::cin >> t_n;
+
+        if (save_data) {
+            std::cout << "Enter directory name where to save files" << std::endl;
+            std::cin >> inputName;
+        }
     }
 
     // Position of internal heater
@@ -229,7 +235,7 @@ int main(int argc, char *argv[]) {
 
     std::filesystem::path dir_path;
     if (scale_threads && save_data) {
-        std::string dir_name = "thread-scaling";
+        std::string dir_name = "thread-scaling-" + inputName;
         dir_path = dir_name;
 
         if (std::filesystem::create_directory(dir_path)) {
