@@ -459,6 +459,7 @@ int main(int argc, char* argv[]) {
                 t_in << " " << 
                 t_out  << " " << 
                 loop_time << " " << 
+                calcT_time << " " <<
                 wallt.count() << 
                 "\n";
         }
