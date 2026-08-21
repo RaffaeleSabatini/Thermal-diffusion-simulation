@@ -183,9 +183,9 @@ __global__ void compute_temperatures(const double* T, Counter* R, const Grid gri
                 int t_tid_z = start_z + tid_z + (k*blockDim.z);
 
                 bool interior_thr = 
-                    (t_tid_x > 0 && t_tid_x < x_n) && 
-                    (t_tid_y > 0 && t_tid_y < y_n) && 
-                    (t_tid_z > 0 && t_tid_z < z_n);
+                    (t_tid_x > 0 && t_tid_x < x_n-1) && 
+                    (t_tid_y > 0 && t_tid_y < y_n-1) && 
+                    (t_tid_z > 0 && t_tid_z < z_n-1);
 
                 if (interior_thr) {
                     double val = T[t_tid_x*y_n*z_n + t_tid_y*z_n + t_tid_z];
