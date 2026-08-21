@@ -340,15 +340,15 @@ int main(int argc, char* argv[]) {
     // Open file 
     std::ofstream file;
     if (save_data) {
-        std::string f_name = "cuda_avg_temp";
+        std::string f_name = "cuda";
         
         if (use_tiling) f_name += "-tiling";
         
         f_name += 
-        "-x" + std::to_string(x_n) + 
-        "-y" + std::to_string(y_n) +
-        "-z" + std::to_string(z_n) +
-        "-t" + std::to_string(t_n);
+        "-x" + std::to_string(x_n) + "_xl" + std::to_string(x_len) +
+        "-y" + std::to_string(y_n) + "_yl" + std::to_string(y_len) +
+        "-z" + std::to_string(z_n) + "_yl" + std::to_string(y_len) +
+        "-t" + std::to_string(t_n); 
 
         f_name += ".txt";
 
